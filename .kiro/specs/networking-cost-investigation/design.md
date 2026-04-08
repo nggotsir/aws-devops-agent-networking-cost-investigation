@@ -2,7 +2,7 @@
 
 ## Overview
 
-An internal investigation engine that helps customers troubleshoot cost-related issues in AWS networking services. The system uses AWS DevOps Agent (Frontier agent) as the orchestrator and customer interface. The agent handles flow log analysis and CloudWatch metrics natively, guided by custom Skills. A CUR MCP server provides cost data from Athena that the agent cannot access directly (Athena queries are blocked as mutative operations in DevOps Agent).
+An investigation engine that helps customers troubleshoot cost-related issues in AWS networking services. The system uses AWS DevOps Agent (Frontier agent) as the orchestrator and customer interface. The agent handles flow log analysis and CloudWatch metrics natively, guided by custom Skills. A CUR MCP server provides cost data from Athena that the agent cannot access directly (Athena queries are blocked as mutative operations in DevOps Agent).
 
 ## Architecture
 
