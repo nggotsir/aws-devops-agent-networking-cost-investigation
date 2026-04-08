@@ -144,6 +144,10 @@ Logging: VPC Flow Logs (all v5 fields) + R53 Resolver query logging on both VPCs
 ├── skills/                             # DevOps Agent Skills
 │   ├── flowlogs-dns-correlation/       # Flow log + R53 DNS analysis methodology
 │   └── cur-cloudwatch-correlation/     # CUR vs CloudWatch reconciliation
+├── specs/                              # Design docs, requirements, task list
+│   ├── design.md
+│   ├── requirements.md
+│   └── tasks.md
 └── docs/                               # Architecture diagrams and learnings
     ├── POC-LEARNINGS.md
     └── test-environment-architecture.drawio.png

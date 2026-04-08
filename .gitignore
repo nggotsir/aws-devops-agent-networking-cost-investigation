@@ -7,13 +7,10 @@ __pycache__/
 # IDE
 .vscode/
 
-# Kiro internal (keep specs, exclude settings and steering)
+# Kiro internal
 .kiro/settings/
 .kiro/steering/
-
-# Unrelated specs from other projects
-.kiro/specs/aws-org-migration/
-.kiro/specs/techno-generator/
+.kiro/specs/
 
 # OS
 .DS_Store
