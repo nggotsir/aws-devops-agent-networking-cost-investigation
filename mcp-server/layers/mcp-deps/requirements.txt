@@ -1,0 +1,1 @@
+awslabs.mcp_lambda_handler

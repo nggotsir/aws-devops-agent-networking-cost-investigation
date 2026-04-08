@@ -1,0 +1,22 @@
+# Build artifacts
+.aws-sam/
+__pycache__/
+*.pyc
+*.zip
+
+# IDE
+.vscode/
+
+# Kiro internal (keep specs, exclude settings and steering)
+.kiro/settings/
+.kiro/steering/
+
+# Unrelated specs from other projects
+.kiro/specs/aws-org-migration/
+.kiro/specs/techno-generator/
+
+# OS
+.DS_Store
+
+# Exclude draw.io source files
+docs/*.drawio

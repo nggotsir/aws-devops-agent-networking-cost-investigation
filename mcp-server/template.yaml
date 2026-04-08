@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'NCI POC - CUR MCP Server for DevOps Agent'
+
+Parameters:
+  McpAuthToken:
+    Type: String
+    NoEcho: true
+    Description: Bearer token for MCP server authentication
+  CURBucketName:
+    Type: String
+    Description: S3 bucket containing CUR 2.0 data
+  AthenaResultsBucket:
+    Type: String
+    Description: S3 bucket for Athena query results
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 120
+    MemorySize: 256
+    Tags:
+      auto-delete: never
+
+Resources:
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: nci-mcp-authorizer
+      Handler: authorizer.handler.lambda_handler
+      CodeUri: ../../src/
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          MCP_AUTH_TOKEN: !Ref McpAuthToken
+
+  MCPApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+      Auth:
+        DefaultAuthorizer: BearerAuth
+        Authorizers:
+          BearerAuth:
+            AuthorizationScopes: []
+            FunctionArn: !GetAtt AuthorizerFunction.Arn
+            FunctionInvokeRole: !GetAtt AuthorizerInvokeRole.Arn
+            Identity:
+              Headers:
+                - Authorization
+            AuthorizerPayloadFormatVersion: "2.0"
+            EnableSimpleResponses: true
+      Tags:
+        auto-delete: never
+
+  AuthorizerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeAuthorizer
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt AuthorizerFunction.Arn
+
+  CURMCPFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: nci-cur-mcp
+      Handler: cur_mcp.handler.lambda_handler
+      CodeUri: ../../src/
+      Environment:
+        Variables:
+          ATHENA_DATABASE: nci_cur
+          ATHENA_TABLE: nci_cur.cur_data
+          ATHENA_OUTPUT: !Sub 's3://${AthenaResultsBucket}/'
+          ATHENA_REGION: eu-central-1
+      Layers:
+        - !Ref MCPDepsLayer
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+                - s3:GetBucketLocation
+              Resource:
+                - !Sub 'arn:aws:s3:::${CURBucketName}'
+                - !Sub 'arn:aws:s3:::${CURBucketName}/*'
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+              Resource:
+                - !Sub 'arn:aws:s3:::${AthenaResultsBucket}/*'
+            - Effect: Allow
+              Action:
+                - glue:GetTable
+                - glue:GetPartitions
+                - glue:GetDatabase
+              Resource: '*'
+      Events:
+        MCPEndpoint:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref MCPApi
+            Path: /mcp
+            Method: ANY
+
+  MCPDepsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: nci-mcp-deps
+      ContentUri: ../../layers/mcp-deps/
+      CompatibleRuntimes:
+        - python3.12
+    Metadata:
+      BuildMethod: python3.12
+
+Outputs:
+  MCPEndpoint:
+    Value: !Sub 'https://${MCPApi}.execute-api.${AWS::Region}.amazonaws.com/prod/mcp'
+    Description: MCP server endpoint URL to register in DevOps Agent

@@ -1,0 +1,546 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'NCI POC - Region A (us-east-1) - VPC, NAT GW, TGW, ALB, instances, flow logs, R53 logging'
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: c5.xlarge
+    Description: EC2 instance type for traffic generators
+
+Mappings:
+  RegionAMI:
+    us-east-1:
+      AMI: ami-0446b021dec428a7b  # Amazon Linux 2023 (latest)
+
+Resources:
+  # ============================================================
+  # VPC
+  # ============================================================
+  VpcA:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: nci-vpc-a
+        - Key: auto-delete
+          Value: never
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: nci-igw-a
+        - Key: auto-delete
+          Value: never
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VpcA
+      InternetGatewayId: !Ref InternetGateway
+
+  # ============================================================
+  # Subnets - 2 AZs (public + private each)
+  # ============================================================
+  PublicSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcA
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: nci-public-az1
+        - Key: auto-delete
+          Value: never
+
+  PublicSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcA
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: nci-public-az2
+        - Key: auto-delete
+          Value: never
+
+  PrivateSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcA
+      CidrBlock: 10.0.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: nci-private-az1
+        - Key: auto-delete
+          Value: never
+
+  PrivateSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcA
+      CidrBlock: 10.0.20.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: nci-private-az2
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # Route Tables
+  # ============================================================
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcA
+      Tags:
+        - Key: Name
+          Value: nci-public-rt
+        - Key: auto-delete
+          Value: never
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetAZ1RTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAZ1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetAZ2RTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAZ2
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcA
+      Tags:
+        - Key: Name
+          Value: nci-private-rt
+        - Key: auto-delete
+          Value: never
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetAZ1RTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetAZ2RTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ============================================================
+  # NAT Gateway (intentionally NO S3 Gateway Endpoint)
+  # ============================================================
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nci-nat-eip
+        - Key: auto-delete
+          Value: never
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnetAZ1
+      Tags:
+        - Key: Name
+          Value: nci-nat-gw
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # Transit Gateway
+  # ============================================================
+  TransitGatewayA:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      Description: NCI POC Transit Gateway Region A
+      AutoAcceptSharedAttachments: enable
+      DefaultRouteTableAssociation: enable
+      DefaultRouteTablePropagation: enable
+      Tags:
+        - Key: Name
+          Value: nci-tgw-a
+        - Key: auto-delete
+          Value: never
+
+  TGWAttachmentA:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGatewayA
+      VpcId: !Ref VpcA
+      SubnetIds:
+        - !Ref PrivateSubnetAZ1
+        - !Ref PrivateSubnetAZ2
+      Tags:
+        - Key: Name
+          Value: nci-tgw-attach-vpc-a
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # Security Groups
+  # ============================================================
+  InstanceSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: NCI POC instances - allow outbound all, SSH inbound
+      VpcId: !Ref VpcA
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.0.0/16
+        - IpProtocol: -1
+          CidrIp: 10.0.0.0/16
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: nci-instance-sg
+        - Key: auto-delete
+          Value: never
+
+  ALBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: NCI POC ALB - allow HTTP
+      VpcId: !Ref VpcA
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: nci-alb-sg
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # EC2 Instance Role (for S3 access, SSM)
+  # ============================================================
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: nci-instance-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  # ============================================================
+  # EC2 Instances (private subnets, 2 AZs)
+  # ============================================================
+  InstanceAZ1:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !FindInMap [RegionAMI, !Ref 'AWS::Region', AMI]
+      SubnetId: !Ref PrivateSubnetAZ1
+      SecurityGroupIds:
+        - !Ref InstanceSG
+      IamInstanceProfile: !Ref InstanceProfile
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum update -y
+          yum install -y aws-cli iperf3 nmap-ncat curl wget httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "nci-instance-az1" > /var/www/html/index.html
+      Tags:
+        - Key: Name
+          Value: nci-instance-az1
+        - Key: auto-delete
+          Value: never
+
+  InstanceAZ2:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !FindInMap [RegionAMI, !Ref 'AWS::Region', AMI]
+      SubnetId: !Ref PrivateSubnetAZ2
+      SecurityGroupIds:
+        - !Ref InstanceSG
+      IamInstanceProfile: !Ref InstanceProfile
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum update -y
+          yum install -y aws-cli iperf3 nmap-ncat curl wget httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "nci-instance-az2" > /var/www/html/index.html
+      Tags:
+        - Key: Name
+          Value: nci-instance-az2
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # ALB (targets in both AZs — generates cross-AZ traffic)
+  # ============================================================
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: nci-alb
+      Scheme: internal
+      Subnets:
+        - !Ref PrivateSubnetAZ1
+        - !Ref PrivateSubnetAZ2
+      SecurityGroups:
+        - !Ref ALBSG
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: nci-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VpcA
+      TargetType: instance
+      Targets:
+        - Id: !Ref InstanceAZ1
+          Port: 80
+        - Id: !Ref InstanceAZ2
+          Port: 80
+      HealthCheckPath: /
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  # ============================================================
+  # S3 Bucket (test data for downloads)
+  # ============================================================
+  TestBucketA:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'nci-test-bucket-a-${AWS::AccountId}'
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # CloudFront Distribution (pointing to S3)
+  # ============================================================
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: nci-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultCacheBehavior:
+          TargetOriginId: s3-origin
+          ViewerProtocolPolicy: allow-all
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          ForwardedValues:
+            QueryString: false
+        Origins:
+          - Id: s3-origin
+            DomainName: !GetAtt TestBucketA.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !Ref CloudFrontOAC
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  TestBucketAPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TestBucketA
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${TestBucketA.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+  # ============================================================
+  # VPC Flow Logs (all fields, v5 custom format)
+  # ============================================================
+  FlowLogGroupA:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /nci/vpc-flow-logs/vpc-a
+      RetentionInDays: 30
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  FlowLogRoleA:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: nci-flow-log-role-a
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: flow-log-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  VpcFlowLogA:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref VpcA
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref FlowLogGroupA
+      DeliverLogsPermissionArn: !GetAtt FlowLogRoleA.Arn
+      LogFormat: '${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status} ${vpc-id} ${subnet-id} ${az-id} ${sublocation-type} ${sublocation-id} ${pkt-srcaddr} ${pkt-dstaddr} ${region} ${pkt-src-aws-service} ${pkt-dst-aws-service} ${flow-direction} ${traffic-path} ${tcp-flags} ${type}'
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # Route 53 Resolver Query Logging
+  # ============================================================
+  R53ResolverLogGroupA:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /nci/r53-resolver/vpc-a
+      RetentionInDays: 30
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  R53ResolverQueryLogConfigA:
+    Type: AWS::Route53Resolver::ResolverQueryLoggingConfig
+    Properties:
+      Name: nci-r53-log-config-a
+      DestinationArn: !GetAtt R53ResolverLogGroupA.Arn
+
+  R53ResolverQueryLogAssocA:
+    Type: AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation
+    Properties:
+      ResolverQueryLogConfigId: !Ref R53ResolverQueryLogConfigA
+      ResourceId: !Ref VpcA
+
+Outputs:
+  VpcAId:
+    Value: !Ref VpcA
+    Export:
+      Name: nci-vpc-a-id
+  TransitGatewayAId:
+    Value: !Ref TransitGatewayA
+    Export:
+      Name: nci-tgw-a-id
+  PrivateSubnetAZ1Id:
+    Value: !Ref PrivateSubnetAZ1
+    Export:
+      Name: nci-private-subnet-az1
+  PrivateSubnetAZ2Id:
+    Value: !Ref PrivateSubnetAZ2
+    Export:
+      Name: nci-private-subnet-az2
+  InstanceAZ1Id:
+    Value: !Ref InstanceAZ1
+  InstanceAZ2Id:
+    Value: !Ref InstanceAZ2
+  NatGatewayId:
+    Value: !Ref NatGateway
+  TestBucketAName:
+    Value: !Ref TestBucketA
+  CloudFrontDomain:
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  ALBDnsName:
+    Value: !GetAtt ALB.DNSName

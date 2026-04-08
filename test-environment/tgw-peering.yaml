@@ -1,0 +1,31 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'NCI POC - Transit Gateway Peering between us-east-1 and eu-central-1'
+
+Parameters:
+  TGWAId:
+    Type: String
+    Description: Transit Gateway ID in us-east-1 (from region-a stack output)
+  TGWBId:
+    Type: String
+    Description: Transit Gateway ID in eu-central-1 (from region-b stack output)
+  PeerRegion:
+    Type: String
+    Default: eu-central-1
+
+Resources:
+  TGWPeeringAttachment:
+    Type: AWS::EC2::TransitGatewayPeeringAttachment
+    Properties:
+      TransitGatewayId: !Ref TGWAId
+      PeerTransitGatewayId: !Ref TGWBId
+      PeerRegion: !Ref PeerRegion
+      Tags:
+        - Key: Name
+          Value: nci-tgw-peering
+        - Key: auto-delete
+          Value: never
+
+Outputs:
+  PeeringAttachmentId:
+    Value: !Ref TGWPeeringAttachment
+    Description: TGW Peering Attachment ID (needs manual acceptance in eu-central-1)

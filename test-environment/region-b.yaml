@@ -1,0 +1,356 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'NCI POC - Region B (eu-central-1) - VPC, TGW, instances, flow logs, R53 logging'
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: c5.xlarge
+    Description: EC2 instance type for traffic generators
+
+Mappings:
+  RegionAMI:
+    eu-central-1:
+      AMI: ami-0c8678195857f64df  # Amazon Linux 2023 (latest)
+
+Resources:
+  # ============================================================
+  # VPC
+  # ============================================================
+  VpcB:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.1.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: nci-vpc-b
+        - Key: auto-delete
+          Value: never
+
+  InternetGatewayB:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: nci-igw-b
+        - Key: auto-delete
+          Value: never
+
+  IGWAttachmentB:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VpcB
+      InternetGatewayId: !Ref InternetGatewayB
+
+  # ============================================================
+  # Subnets
+  # ============================================================
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcB
+      CidrBlock: 10.1.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: nci-public-b
+        - Key: auto-delete
+          Value: never
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcB
+      CidrBlock: 10.1.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: nci-private-b
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # Route Tables
+  # ============================================================
+  PublicRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcB
+      Tags:
+        - Key: Name
+          Value: nci-public-rt-b
+        - Key: auto-delete
+          Value: never
+
+  PublicRouteB:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachmentB
+    Properties:
+      RouteTableId: !Ref PublicRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGatewayB
+
+  PublicSubnetBRTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTableB
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcB
+      Tags:
+        - Key: Name
+          Value: nci-private-rt-b
+        - Key: auto-delete
+          Value: never
+
+  NatEIPB:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nci-nat-eip-b
+        - Key: auto-delete
+          Value: never
+
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIPB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: nci-nat-gw-b
+        - Key: auto-delete
+          Value: never
+
+  PrivateRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayB
+
+  PrivateSubnetBRTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  # ============================================================
+  # Transit Gateway
+  # ============================================================
+  TransitGatewayB:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      Description: NCI POC Transit Gateway Region B
+      AutoAcceptSharedAttachments: enable
+      DefaultRouteTableAssociation: enable
+      DefaultRouteTablePropagation: enable
+      Tags:
+        - Key: Name
+          Value: nci-tgw-b
+        - Key: auto-delete
+          Value: never
+
+  TGWAttachmentB:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGatewayB
+      VpcId: !Ref VpcB
+      SubnetIds:
+        - !Ref PrivateSubnetB
+      Tags:
+        - Key: Name
+          Value: nci-tgw-attach-vpc-b
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # Security Group
+  # ============================================================
+  InstanceSGB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: NCI POC instances Region B
+      VpcId: !Ref VpcB
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.1.0.0/16
+        - IpProtocol: -1
+          CidrIp: 10.0.0.0/8
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: nci-instance-sg-b
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # EC2 Instance Role
+  # ============================================================
+  InstanceRoleB:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: nci-instance-role-b
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  InstanceProfileB:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRoleB
+
+  # ============================================================
+  # EC2 Instance
+  # ============================================================
+  InstanceB:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !FindInMap [RegionAMI, !Ref 'AWS::Region', AMI]
+      SubnetId: !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref InstanceSGB
+      IamInstanceProfile: !Ref InstanceProfileB
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum update -y
+          yum install -y aws-cli iperf3 nmap-ncat curl wget httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "nci-instance-b" > /var/www/html/index.html
+      Tags:
+        - Key: Name
+          Value: nci-instance-b
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # S3 Bucket (Region B - for cross-region downloads)
+  # ============================================================
+  TestBucketB:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'nci-test-bucket-b-${AWS::AccountId}'
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # VPC Flow Logs (all fields)
+  # ============================================================
+  FlowLogGroupB:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /nci/vpc-flow-logs/vpc-b
+      RetentionInDays: 30
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  FlowLogRoleB:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: nci-flow-log-role-b
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: flow-log-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  VpcFlowLogB:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref VpcB
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref FlowLogGroupB
+      DeliverLogsPermissionArn: !GetAtt FlowLogRoleB.Arn
+      LogFormat: '${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status} ${vpc-id} ${subnet-id} ${az-id} ${sublocation-type} ${sublocation-id} ${pkt-srcaddr} ${pkt-dstaddr} ${region} ${pkt-src-aws-service} ${pkt-dst-aws-service} ${flow-direction} ${traffic-path} ${tcp-flags} ${type}'
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  # ============================================================
+  # Route 53 Resolver Query Logging
+  # ============================================================
+  R53ResolverLogGroupB:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /nci/r53-resolver/vpc-b
+      RetentionInDays: 30
+      Tags:
+        - Key: auto-delete
+          Value: never
+
+  R53ResolverQueryLogConfigB:
+    Type: AWS::Route53Resolver::ResolverQueryLoggingConfig
+    Properties:
+      Name: nci-r53-log-config-b
+      DestinationArn: !GetAtt R53ResolverLogGroupB.Arn
+
+  R53ResolverQueryLogAssocB:
+    Type: AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation
+    Properties:
+      ResolverQueryLogConfigId: !Ref R53ResolverQueryLogConfigB
+      ResourceId: !Ref VpcB
+
+Outputs:
+  VpcBId:
+    Value: !Ref VpcB
+    Export:
+      Name: nci-vpc-b-id
+  TransitGatewayBId:
+    Value: !Ref TransitGatewayB
+    Export:
+      Name: nci-tgw-b-id
+  PrivateSubnetBId:
+    Value: !Ref PrivateSubnetB
+    Export:
+      Name: nci-private-subnet-b
+  InstanceBId:
+    Value: !Ref InstanceB
+  TestBucketBName:
+    Value: !Ref TestBucketB
